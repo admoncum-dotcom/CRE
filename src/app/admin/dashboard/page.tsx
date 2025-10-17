@@ -375,7 +375,25 @@ export default function AdminDashboard() {
                         {unreadCount > 0 && <span className="absolute -top-1 -right-1 flex h-3 w-3"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span><span className="relative inline-flex rounded-full h-3 w-3 bg-sky-500"></span></span>}
                     </button>
                     <AnimatePresence>
-                        {isNotificationPanelOpen && <NotificationPanel notifications={notifications} onMarkAsRead={handleMarkAsRead} onSave={handleSaveNotification} onDelete={handleDeleteNotification} onClose={() => setNotificationPanelOpen(false)} />}
+                        {isNotificationPanelOpen && (
+                          <NotificationPanel
+                            notifications={notifications}
+                            onMarkAsRead={handleMarkAsRead}
+                            onSave={handleSaveNotification}
+                            onDelete={handleDeleteNotification}
+                            onClose={() => setNotificationPanelOpen(false)}
+                            onMarkAllAsRead={async () => {
+                              if (!currentUser) return;
+                              const notifRef = collection(db, `users/${currentUser.uid}/notifications`);
+                              const notifSnap = await getDocs(notifRef);
+                              notifSnap.forEach(async (docSnap) => {
+                                if (!docSnap.data().read) {
+                                  await updateDoc(docSnap.ref, { read: true });
+                                }
+                              });
+                            }}
+                          />
+                        )}
                     </AnimatePresence>
                 </div>
                 <button onClick={() => setSettingsModalOpen(true)} className="flex items-center space-x-3 cursor-pointer p-2 rounded-lg hover:bg-slate-100 transition-colors group">
