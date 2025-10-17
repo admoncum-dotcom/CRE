@@ -42,11 +42,11 @@ const toLocalDateString = (date: Date) => {
 // --- Interfaces para Notificaciones ---
 interface Notification {
   id: string;
-  type: "new_appointment" | "upcoming_appointment" | "admin_message" | string;
+  type: 'new_appointment' | 'upcoming_appointment' | 'appointment_cancelled' | 'admin_message' | 'system_alert' | 'patient_message';
   message: string;
   read: boolean;
   saved: boolean;
-  timestamp: any;
+  timestamp: Timestamp;
 }
 
 // -----------------------------------------------------------------
@@ -477,16 +477,27 @@ export default function ReceptionistDashboardPage() {
                         )}
                     </button>
                     <AnimatePresence>
-                       {isNotificationPanelOpen && (
-                         <NotificationPanel 
-                           notifications={notifications} 
-                           onMarkAsRead={handleMarkAsRead} 
-                           onSave={handleSaveNotification} 
-                           onDelete={handleDeleteNotification} 
-                           onClose={() => setNotificationPanelOpen(false)} 
-                         />
-                       )}
+                      {isNotificationPanelOpen && (
+                        <NotificationPanel 
+                          notifications={notifications} 
+                          onMarkAsRead={handleMarkAsRead} 
+                          onSave={handleSaveNotification} 
+                          onDelete={handleDeleteNotification} 
+                          onClose={() => setNotificationPanelOpen(false)} 
+                          onMarkAllAsRead={async () => {
+                            if (!user) return;
+                            const notifRef = collection(db, `users/${user.uid}/notifications`);
+                            const notifSnap = await getDocs(notifRef);
+                            notifSnap.forEach(async (docSnap) => {
+                              if (!docSnap.data().read) {
+                                await updateDoc(docSnap.ref, { read: true });
+                              }
+                            });
+                          }}
+                        />
+                      )}
                     </AnimatePresence>
+
                 </div>
                 
                 {/* Avatar */}
