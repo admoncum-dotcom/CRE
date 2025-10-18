@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { 
   doc, getDoc, collection, query, where, onSnapshot, Timestamp, addDoc, updateDoc, deleteDoc,
-  orderBy
+  orderBy, getDocs
 } from 'firebase/firestore';
 import Image from 'next/image';
 import { auth, db } from '@/lib/firebase';
@@ -141,7 +141,28 @@ const DashboardHomeContent = ({ userName, appointments, onSelectAppointment, onS
 
 // --- SISTEMA DE NOTIFICACIONES MEJORADO ---
 
-// Helper function para crear notificaciones
+// ✅ CORRECCIÓN: Verificar si ya existe una notificación para evitar duplicados
+const checkExistingNotification = async (
+  userId: string,
+  appointmentId: string,
+  type: string
+): Promise<boolean> => {
+  try {
+    const notifQuery = query(
+      collection(db, `users/${userId}/notifications`),
+      where('type', '==', type),
+      where('metadata.appointmentId', '==', appointmentId)
+    );
+    
+    const snapshot = await getDocs(notifQuery);
+    return !snapshot.empty;
+  } catch (error) {
+    console.error('❌ Error verificando notificación existente:', error);
+    return false;
+  }
+};
+
+// Helper function para crear notificaciones (MEJORADA)
 const createNotification = async (
   userId: string, 
   type: Notification['type'],
@@ -149,6 +170,15 @@ const createNotification = async (
   metadata?: { appointmentId?: string; patientId?: string; priority?: 'low' | 'medium' | 'high'; }
 ): Promise<string> => {
   try {
+    // ✅ CORRECCIÓN: Verificar si ya existe esta notificación
+    if (metadata?.appointmentId) {
+      const exists = await checkExistingNotification(userId, metadata.appointmentId, type);
+      if (exists) {
+        console.log('⚠️ Notificación ya existe, evitando duplicado');
+        return ''; // Retornar vacío si ya existe
+      }
+    }
+
     const notifRef = collection(db, `users/${userId}/notifications`);
     const newNotifDoc: Omit<Notification, 'id'> = {
       type,
@@ -160,6 +190,7 @@ const createNotification = async (
     };
     
     const docRef = await addDoc(notifRef, newNotifDoc);
+    console.log('✅ Notificación creada:', docRef.id);
     return docRef.id;
   } catch (error) {
     console.error('❌ Error creando notificación:', error);
@@ -199,10 +230,10 @@ export default function DoctorDashboardPage() {
     const [isNotificationPanelOpen, setNotificationPanelOpen] = useState(false);
     const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
     
-    // REFERENCIAS PARA CONTROL DE NOTIFICACIONES Y CITAS
+    // ✅ CORRECCIÓN: Referencias mejoradas para control de notificaciones
     const isInitialLoad = useRef(true);
     const notificationUnsubscribes = useRef<(() => void)[]>([]);
-    const sentUpcomingNotifications = useRef<Set<string>>(new Set());
+    const processedAppointments = useRef<Set<string>>(new Set()); // Para evitar procesar la misma cita múltiples veces
     const lastNotificationCheck = useRef<Date>(new Date());
 
     const unreadCount = notifications.filter(n => !n.read).length;
@@ -273,7 +304,7 @@ export default function DoctorDashboardPage() {
         }
     }, [cleanupSubscriptions]);
 
-    // CONFIGURACIÓN DE CITAS - LÓGICA COMPLETA DEL SEGUNDO CÓDIGO
+    // ✅ CORRECCIÓN: CONFIGURACIÓN DE CITAS SIMPLIFICADA (SIN CREAR NOTIFICACIONES AQUÍ)
     const setupAppointments = useCallback((userId: string) => {
         if (!userId) return;
 
@@ -291,16 +322,24 @@ export default function DoctorDashboardPage() {
             
             setAllAppointments(appointmentsData);
 
-            // Notificar nuevas citas (solo si no es la carga inicial)
+            // ✅ CORRECCIÓN: Solo procesar cambios después de la carga inicial
             if (isInitialLoad.current) {
                 isInitialLoad.current = false;
                 return;
             }
 
+            // ✅ CORRECCIÓN: Solo notificar nuevas citas (NO recordatorios aquí)
             snapshot.docChanges().forEach(async (change) => {
                 if (change.type === "added") {
                     try {
                         const newAppt = change.doc.data();
+                        
+                        // Verificar si ya procesamos esta cita
+                        if (processedAppointments.current.has(change.doc.id)) {
+                            return;
+                        }
+                        
+                        processedAppointments.current.add(change.doc.id);
                         
                         // Crear notificación para nueva cita
                         const notifId = await createNotification(
@@ -314,22 +353,24 @@ export default function DoctorDashboardPage() {
                             }
                         );
 
-                        // Agregar a toast notifications
-                        setToastNotifications(prev => [
-                            {
-                                id: notifId,
-                                type: 'new_appointment',
-                                message: `Nueva cita: ${newAppt.patientName} a las ${newAppt.time}`,
-                                read: false,
-                                saved: false,
-                                timestamp: Timestamp.now(),
-                                metadata: {
-                                    appointmentId: change.doc.id,
-                                    patientId: newAppt.patientId
-                                }
-                            },
-                            ...prev
-                        ]);
+                        // Solo agregar toast si se creó la notificación
+                        if (notifId) {
+                            setToastNotifications(prev => [
+                                {
+                                    id: notifId,
+                                    type: 'new_appointment',
+                                    message: `Nueva cita: ${newAppt.patientName} a las ${newAppt.time}`,
+                                    read: false,
+                                    saved: false,
+                                    timestamp: Timestamp.now(),
+                                    metadata: {
+                                        appointmentId: change.doc.id,
+                                        patientId: newAppt.patientId
+                                    }
+                                },
+                                ...prev
+                            ]);
+                        }
 
                     } catch (error) {
                         console.error('❌ Error procesando nueva cita:', error);
@@ -343,145 +384,81 @@ export default function DoctorDashboardPage() {
         notificationUnsubscribes.current.push(unsubscribeAppts);
     }, []);
 
-    // SISTEMA MEJORADO DE RECORDATORIOS DE CITAS PRÓXIMAS
+    // ✅ CORRECCIÓN: SISTEMA ÚNICO Y MEJORADO DE RECORDATORIOS (SOLO 30 MINUTOS ANTES)
     const checkUpcomingAppointments = useCallback(async (userId: string) => {
-        if (!userId) return;
+        if (!userId || allAppointments.length === 0) return;
 
         const now = new Date();
-        const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
         const thirtyMinutesFromNow = new Date(now.getTime() + 30 * 60 * 1000);
+        const twentyFiveMinutesFromNow = new Date(now.getTime() + 25 * 60 * 1000); // Ventana de 5 minutos
 
-        // Solo verificar cada 2 minutos para evitar spam
-        if (now.getTime() - lastNotificationCheck.current.getTime() < 2 * 60 * 1000) {
+        // ✅ CORRECCIÓN: Solo verificar cada 5 minutos
+        if (now.getTime() - lastNotificationCheck.current.getTime() < 5 * 60 * 1000) {
             return;
         }
 
         lastNotificationCheck.current = now;
+        console.log('🔔 Verificando citas próximas...');
 
         try {
-            const upcomingNotifications: Promise<string>[] = [];
-
-            allAppointments.forEach(async (appt) => {
+            for (const appt of allAppointments) {
                 // Saltar citas completadas o canceladas
                 if (appt.status === 'completed' || appt.status === 'cancelled') {
-                    return;
+                    continue;
                 }
 
                 const [year, month, day] = appt.date.split('-').map(Number);
                 const [hour, minute] = appt.time.split(':').map(Number);
                 const apptDateTime = new Date(year, month - 1, day, hour, minute);
 
-                // Crear clave única para esta notificación de recordatorio
-                const notificationKey = `upcoming-${appt.id}-${apptDateTime.getTime()}`;
-
-                // Verificar si ya enviamos esta notificación
-                if (sentUpcomingNotifications.current.has(notificationKey)) {
-                    return;
-                }
-
-                // Notificación para citas en 30 minutos
-                if (apptDateTime > now && apptDateTime <= thirtyMinutesFromNow) {
-                    const notifPromise = createNotification(
-                        userId,
-                        'upcoming_appointment',
-                        `⏰ Cita en 30 min: ${appt.patientName} a las ${appt.time}`,
-                        {
-                            appointmentId: appt.id,
-                            patientId: appt.patientId,
-                            priority: 'high'
-                        }
-                    );
-                    upcomingNotifications.push(notifPromise);
-                    sentUpcomingNotifications.current.add(notificationKey);
-                }
-                // Notificación para citas en 1 hora
-                else if (apptDateTime > thirtyMinutesFromNow && apptDateTime <= oneHourFromNow) {
-                    const notifPromise = createNotification(
-                        userId,
-                        'upcoming_appointment',
-                        `📅 Cita en 1 hora: ${appt.patientName} a las ${appt.time}`,
-                        {
-                            appointmentId: appt.id,
-                            patientId: appt.patientId,
-                            priority: 'medium'
-                        }
-                    );
-                    upcomingNotifications.push(notifPromise);
-                    sentUpcomingNotifications.current.add(notificationKey);
-                }
-            });
-
-            // Esperar a que se creen todas las notificaciones
-            if (upcomingNotifications.length > 0) {
-                const notifIds = await Promise.all(upcomingNotifications);
-                
-                // Agregar toasts para las nuevas notificaciones
-                notifIds.forEach((notifId, index) => {
-                    const appt = allAppointments[index];
-                    if (appt) {
-                        setToastNotifications(prev => [
+                // ✅ CORRECCIÓN: Solo notificar si está entre 25 y 30 minutos antes
+                if (apptDateTime >= twentyFiveMinutesFromNow && apptDateTime <= thirtyMinutesFromNow) {
+                    console.log(`⏰ Cita próxima detectada: ${appt.patientName} a las ${appt.time}`);
+                    
+                    // ✅ CORRECCIÓN: Verificar si ya existe esta notificación de recordatorio
+                    const exists = await checkExistingNotification(userId, appt.id, 'upcoming_appointment');
+                    
+                    if (!exists) {
+                        const notifId = await createNotification(
+                            userId,
+                            'upcoming_appointment',
+                            `⏰ Recordatorio: Cita con ${appt.patientName} en 30 minutos (${appt.time})`,
                             {
-                                id: notifId,
-                                type: 'upcoming_appointment',
-                                message: `Recordatorio: ${appt.patientName} a las ${appt.time}`,
-                                read: false,
-                                saved: false,
-                                timestamp: Timestamp.now(),
-                                metadata: {
-                                    appointmentId: appt.id,
-                                    patientId: appt.patientId
-                                }
-                            },
-                            ...prev
-                        ]);
-                    }
-                });
-            }
+                                appointmentId: appt.id,
+                                patientId: appt.patientId,
+                                priority: 'high'
+                            }
+                        );
 
+                        // Solo agregar toast si se creó la notificación
+                        if (notifId) {
+                            console.log('✅ Notificación de recordatorio creada');
+                            setToastNotifications(prev => [
+                                {
+                                    id: notifId,
+                                    type: 'upcoming_appointment',
+                                    message: `⏰ Recordatorio: Cita con ${appt.patientName} en 30 minutos`,
+                                    read: false,
+                                    saved: false,
+                                    timestamp: Timestamp.now(),
+                                    metadata: {
+                                        appointmentId: appt.id,
+                                        patientId: appt.patientId,
+                                        priority: 'high'
+                                    }
+                                },
+                                ...prev
+                            ]);
+                        }
+                    } else {
+                        console.log('⚠️ Recordatorio ya existe para esta cita');
+                    }
+                }
+            }
         } catch (error) {
             console.error('❌ Error verificando citas próximas:', error);
         }
     }, [allAppointments]);
-
-    // SISTEMA ALTERNATIVO DE RECORDATORIOS (DEL SEGUNDO CÓDIGO)
-    const setupAppointmentReminders = useCallback(() => {
-        if (!user || allAppointments.length === 0) return;
-
-        const interval = setInterval(() => {
-            const now = new Date();
-            const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
-            
-            allAppointments.forEach(async (appt) => {
-                const [year, month, day] = appt.date.split('-').map(Number);
-                const [hour, minute] = appt.time.split(':').map(Number);
-                const apptDate = new Date(year, month - 1, day, hour, minute);
-                
-                if (apptDate > now && apptDate <= oneHourFromNow && appt.status !== 'completed') {
-                    const notifId = `upcoming-${appt.id}`;
-                    
-                    // Verificar si ya existe esta notificación
-                    if (!notifications.some(n => n.id === notifId) && user) {
-                        try {
-                            const notifRef = collection(db, `users/${user.uid}/notifications`);
-                            const newNotifDoc: Omit<Notification, 'id'> = { 
-                                type: 'upcoming_appointment', 
-                                message: `Recordatorio: Cita con ${appt.patientName} a las ${appt.time}`, 
-                                read: false, 
-                                saved: false, 
-                                timestamp: Timestamp.now() 
-                            };
-                            const docRef = await addDoc(notifRef, newNotifDoc);
-                            setToastNotifications(prev => [{id: docRef.id, ...newNotifDoc}, ...prev]);
-                        } catch (error) {
-                            console.error('Error creando recordatorio:', error);
-                        }
-                    }
-                }
-            });
-        }, 60000); // Verificar cada minuto
-
-        return () => clearInterval(interval);
-    }, [allAppointments, notifications, user]);
 
     // EFECTO PRINCIPAL DE AUTENTICACIÓN
     useEffect(() => {
@@ -507,25 +484,20 @@ export default function DoctorDashboardPage() {
         };
     }, [router, setupUserNotifications, setupAppointments, cleanupSubscriptions]);
 
-    // EFECTO PARA RECORDATORIOS DE CITAS PRÓXIMAS
+    // ✅ CORRECCIÓN: EFECTO ÚNICO PARA RECORDATORIOS (cada 5 minutos)
     useEffect(() => {
         if (!user || allAppointments.length === 0) return;
 
-        // Verificar citas próximas inmediatamente al cargar
+        // Verificar inmediatamente
         checkUpcomingAppointments(user.uid);
 
-        // Configurar intervalo mejorado (cada 2 minutos)
+        // ✅ CORRECCIÓN: Intervalo de 5 minutos (más eficiente)
         const interval = setInterval(() => {
             checkUpcomingAppointments(user.uid);
-        }, 2 * 60 * 1000);
+        }, 5 * 60 * 1000);
 
         return () => clearInterval(interval);
     }, [user, allAppointments, checkUpcomingAppointments]);
-
-    // SISTEMA ALTERNATIVO DE RECORDATORIOS
-    useEffect(() => {
-        setupAppointmentReminders();
-    }, [setupAppointmentReminders]);
 
     // EFECTO MEJORADO PARA TOAST NOTIFICATIONS
     useEffect(() => {
@@ -653,7 +625,7 @@ export default function DoctorDashboardPage() {
                 <div>
                     <div className="flex flex-col items-center space-y-4 mb-12">
                         <button onClick={() => setView('dashboard')} className="cursor-pointer transition-transform duration-200 hover:scale-105">
-                            <Image src="/CRE logoo.svg" alt="Logo Clínica CRE" width={100} height={70} priority />
+                            <img src="/CRE logoo.svg" alt="Logo Clínica CRE" width={100} height={70} />
                         </button>
                     </div>
                     <nav className="space-y-3">
