@@ -653,7 +653,7 @@ export default function DoctorDashboardPage() {
                 <div>
                     <div className="flex flex-col items-center space-y-4 mb-12">
                         <button onClick={() => setView('dashboard')} className="cursor-pointer transition-transform duration-200 hover:scale-105">
-                            <Image src="Cre logoo.svg" alt="Logo Clínica CRE" width={100} height={70} priority />
+                            <Image src="/CRE logoo.svg" alt="Logo Clínica CRE" width={100} height={70} priority />
                         </button>
                     </div>
                     <nav className="space-y-3">
